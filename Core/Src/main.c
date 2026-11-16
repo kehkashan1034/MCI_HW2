@@ -30,8 +30,6 @@ int main(void)
     // Start sampling timer
     timer_start();
 
-    uint16_t count = 0;
-
     while (1)
     {
         // Check if ADC samples are available
@@ -43,14 +41,8 @@ int main(void)
             // Move buffer position
             adc_tail = (adc_tail + 1) % BUFFER_SIZE;
 
-            // Print every 100th sample
-            count++;
-
-            if (count >= 100)
-            {
-                uart_print_value(value);
-                count = 0;
-            }
+            // Send each ADC sample as two bytes for plot.py
+            uart_send_sample(value);
         }
     }
 }
