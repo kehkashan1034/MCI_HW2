@@ -32,50 +32,63 @@ ax.grid(True)
 time_axis = np.arange(-WINDOW, 0) / FS * 1000
 
 
+def find_sample_alignment(data):
+    # Each sample is two bytes; its high byte must have marker nibble 0xA.
+    if len(data) < 64:
+        return None
+
+    for start in range(len(data) - 63):
+        headers_match = all(
+            (data[start + 2 * sample + 1] & 0xF0) == 0xA0
+            for sample in range(32)
+        )
+
+        if headers_match:
+            return start
+
+    return None
+
+
 def update(frame):
     global aligned
 
-    # Read available serial data
+    # Read available serial data.
     data = ser.read(ser.in_waiting)
     if data:
         pending.extend(data)
 
-    # Find the high byte of each 12-bit sample.
-    # Its value must be between 0 and 15.
-    if not aligned and len(pending) >= 128:
-        check_length = min(len(pending), 512)
-        check_length -= check_length % 2
-
-        even_bytes_are_high = all(
-            pending[i] <= 15 for i in range(0, check_length, 2)
-        )
-        odd_bytes_are_high = all(
-            pending[i] <= 15 for i in range(1, check_length, 2)
-        )
-
-        if even_bytes_are_high and not odd_bytes_are_high:
-            # The first byte is a high byte, so discard it.
-            del pending[0]
-            aligned = True
-        elif odd_bytes_are_high and not even_bytes_are_high:
-            # The first byte is a low byte; sample pairs are aligned.
-            aligned = True
-
-    # Decode complete samples. If the byte order slips, realign.
     values = []
 
-    while aligned and len(pending) >= 2:
+    while True:
+        if not aligned:
+            start = find_sample_alignment(pending)
+
+            if start is None:
+                # Keep a short tail so the next incoming bytes can complete a scan.
+                if len(pending) > 4096:
+                    del pending[:-63]
+                break
+
+            # Discard bytes before the first matching sample boundary.
+            if start > 0:
+                del pending[:start]
+
+            aligned = True
+
+        if len(pending) < 2:
+            break
+
         low_byte = pending[0]
         high_byte = pending[1]
 
-        if high_byte <= 15:
-            values.append(low_byte | (high_byte << 8))
+        if (high_byte & 0xF0) == 0xA0:
+            sample = low_byte | ((high_byte & 0x0F) << 8)
+            values.append(sample)
             del pending[:2]
         else:
-            # Shift by one byte and search for sample alignment again.
+            # A byte was lost. Scan the buffer again for a sample boundary.
             del pending[0]
             aligned = False
-            break
 
     if values:
         voltage = np.array(values) * VREF / 4095
